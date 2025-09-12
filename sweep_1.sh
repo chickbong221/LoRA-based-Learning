@@ -1,0 +1,1 @@
+python script.py --use_pretrained --wandb
