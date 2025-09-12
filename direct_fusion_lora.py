@@ -111,6 +111,11 @@ class direct_fusionLoRAModule:
                     # Freeze original weights
                     module.weight.requires_grad = False
 
+        print("Parameters with requires_grad=True:")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                print(name, param.shape)
+
     def expand_rank(self, new_rank):
         """
         Expands the rank of the LoRA matrices by fusing old weights into the base

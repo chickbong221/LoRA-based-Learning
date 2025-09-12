@@ -75,8 +75,6 @@ def build_model(args, use_progressive_lora: bool = False, num_classes: int = 100
     return model, progressive_lora
 
 class ProgressiveLoRAModule:
-    """Handles progressive expansion of LoRA matrices."""
-
     def __init__(self, model, config, target_modules, device, max_rank):
         self.model = model
         self.config = config
@@ -84,88 +82,120 @@ class ProgressiveLoRAModule:
         self.device = device
         self.current_rank = config.r
         self.max_rank = max_rank
-        self.last_expanded_rank = 0
 
         self._initialize_lora_modules_full()
-        # Store the rank from the previous expansion to determine the new slice
 
     def _initialize_lora_modules_full(self):
-        """Initializes full-size LoRA matrices and sets initial ranks as trainable."""
         for name, module in self.model.named_modules():
-            if any(target in name for target in self.target_modules):
-                if hasattr(module, "weight"):
-                    in_features = module.weight.shape[1]
-                    out_features = module.weight.shape[0]
+            if any(target in name for target in self.target_modules) and hasattr(module, "weight"):
+                in_features = module.weight.shape[1]
+                out_features = module.weight.shape[0]
 
-                    # Create the full-size LoRA A and B matrices with max_rank
-                    lora_A = nn.Parameter(torch.empty(self.max_rank, in_features, device=self.device))
-                    nn.init.kaiming_uniform_(lora_A, a=math.sqrt(5))
-                    
-                    lora_B = nn.Parameter(torch.zeros(out_features, self.max_rank, device=self.device))
+                # Chia 3 phần
+                lora_A_training = nn.Parameter(
+                    torch.empty(self.current_rank, in_features, device=self.device)
+                )
+                nn.init.kaiming_uniform_(lora_A_training, a=math.sqrt(5))
+                lora_B_training = nn.Parameter(
+                    torch.zeros(out_features, self.current_rank, device=self.device)
+                )
 
-                    # Attach the full matrices to the module
-                    setattr(module, "lora_A", lora_A)
-                    setattr(module, "lora_B", lora_B)
+                remaining = self.max_rank - self.current_rank
+                lora_A_not_trained = nn.Parameter(
+                    torch.empty(remaining, in_features, device=self.device),
+                    requires_grad=False
+                )
+                nn.init.kaiming_uniform_(lora_A_not_trained, a=math.sqrt(5))
+                lora_B_not_trained = nn.Parameter(
+                    torch.zeros(out_features, remaining, device=self.device),
+                    requires_grad=False
+                )
 
-                    # Freeze the original weights
-                    module.weight.requires_grad = False
-                    
-                    # Set initial ranks as trainable, the rest are frozen
-                    self._update_trainable_state(module)
+                lora_A_trained = nn.Parameter(torch.empty(0, in_features, device=self.device),
+                                              requires_grad=False)
+                lora_B_trained = nn.Parameter(torch.empty(out_features, 0, device=self.device),
+                                              requires_grad=False)
 
-    def _update_trainable_state(self, module):
-        """Helper to set requires_grad based on current_rank and last_expanded_rank."""
-        lora_A = getattr(module, "lora_A")
-        lora_B = getattr(module, "lora_B")
-        
-        # Freeze all parameters first
-        lora_A.requires_grad = False
-        lora_B.requires_grad = False
-        
-        # Unfreeze only the new slice
-        new_slice = slice(self.last_expanded_rank, self.current_rank)
-        lora_A[new_slice, :].requires_grad = True
-        lora_B[:, new_slice].requires_grad = True
+                # Attach
+                module.lora_A_training = lora_A_training
+                module.lora_B_training = lora_B_training
+                module.lora_A_trained = lora_A_trained
+                module.lora_B_trained = lora_B_trained
+                module.lora_A_not_trained = lora_A_not_trained
+                module.lora_B_not_trained = lora_B_not_trained
+
+                module.weight.requires_grad = False
+
+        # print("Parameters with requires_grad=True:")
+        # for name, param in self.model.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.shape)
 
     def expand_rank(self, new_rank):
-        """Expands the trainable rank of the LoRA matrices."""
-        if new_rank > self.max_rank:
+        if new_rank >= self.max_rank:
             print(f"Cannot expand to {new_rank}, max rank is {self.max_rank}.")
             return
-        
-        self.last_expanded_rank = self.current_rank
-        self.current_rank = new_rank
-        
-        print(f"Expanding LoRA trainable rank from {self.last_expanded_rank} to {self.current_rank}. Freezing old ranks and unfreezing new ones.")
 
+        print(f"Expanding rank {self.current_rank} → {new_rank}")
         for name, module in self.model.named_modules():
-            if any(target in name for target in self.target_modules):
-                if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
-                    self._update_trainable_state(module)
-        
-        print(f"Trainable rank successfully expanded to {self.current_rank}")
+            if hasattr(module, "lora_A_training"):
+                # Hợp nhất training → trained
+                module.lora_A_trained = nn.Parameter(
+                    torch.cat([module.lora_A_trained.data,
+                               module.lora_A_training.data], dim=0),
+                    requires_grad=False
+                )
+                module.lora_B_trained = nn.Parameter(
+                    torch.cat([module.lora_B_trained.data,
+                               module.lora_B_training.data], dim=1),
+                    requires_grad=False
+                )
+
+                # Lấy slice mới từ not_trained
+                add_rank = new_rank - self.current_rank
+                new_A_training = module.lora_A_not_trained.data[:add_rank, :]
+                new_B_training = module.lora_B_not_trained.data[:, :add_rank]
+
+                # Update lại not_trained
+                module.lora_A_not_trained = nn.Parameter(
+                    module.lora_A_not_trained.data[add_rank:, :],
+                    requires_grad=False
+                )
+                module.lora_B_not_trained = nn.Parameter(
+                    module.lora_B_not_trained.data[:, add_rank:],
+                    requires_grad=False
+                )
+
+                # Set training
+                module.lora_A_training = nn.Parameter(new_A_training, requires_grad=True)
+                module.lora_B_training = nn.Parameter(new_B_training, requires_grad=True)
+
+        self.current_rank = new_rank
 
     def apply_progressive_lora_hooks(self, model):
-        """Applies a forward hook to integrate the full LoRA matrices."""
         def create_hook():
             def hook(module, input, output):
                 alpha = self.config.lora_alpha
                 scaling = alpha / self.max_rank
-                
                 x = input[0]
 
-                # Use the full initialized matrices
-                lora_A = getattr(module, "lora_A")
-                lora_B = getattr(module, "lora_B")
-                
-                # Perform the computation using the full matrices
+                # Ghép 3 phần theo trật tự [trained | training | not_trained]
+                lora_A = torch.cat(
+                    [module.lora_A_trained, module.lora_A_training, module.lora_A_not_trained],
+                    dim=0
+                )
+                lora_B = torch.cat(
+                    [module.lora_B_trained, module.lora_B_training, module.lora_B_not_trained],
+                    dim=1
+                )
+
                 lora_output = (x @ lora_A.T @ lora_B.T) * scaling
-                
                 return output + lora_output
+
             return hook
 
         for name, module in model.named_modules():
-            if hasattr(module, "lora_A"):
+            if hasattr(module, "lora_A_training"):
                 module.register_forward_hook(create_hook())
 
 def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device, wandb_run):
@@ -215,7 +245,7 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
     current_rank = args.start_rank
     loss_history = []
 
-    min_improvement = 0.001  # Minimum loss reduction threshold
+    min_improvement = 0.005  # Minimum loss reduction threshold
     patience_epochs = 5
     last_expansion_epoch = 0
     patience = 0
@@ -227,6 +257,7 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
         if (epoch > 0 and current_rank < args.max_rank and len(loss_history) >= 5):
             # Check if loss has plateaued
             improvement = min(loss_history[:-1]) - loss_history[-1]
+            
             print(f"Epoch {epoch}: Recent loss improvement: {improvement:.6f}")
             loss_plateaued = improvement < min_improvement
 
@@ -254,6 +285,11 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
 
         model.train()
         running_loss, running_acc, total = 0.0, 0, 0
+
+        # print("Parameters with requires_grad=True:")
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.shape)
 
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)

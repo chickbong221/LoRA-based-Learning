@@ -112,7 +112,7 @@ def main():
     #     wandb_run=wandb_run
     # )
 
-    # Run 4: Unfreeze Progressive LoRA
+    # Run 5: Unfreeze Progressive LoRA
     results_full_ft = train_with_progressive_lora_unfreeze( 
         args=args, 
         train_loader=train_loader, 
