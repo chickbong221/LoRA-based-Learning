@@ -101,8 +101,10 @@ class direct_fusionLoRAModule:
                     lora_B_trainable = nn.Parameter(
                         torch.zeros(out_features, self.current_rank, device=self.device))
 
-                    nn.init.kaiming_uniform_(lora_A_trainable, a=math.sqrt(5))
+                    # nn.init.kaiming_uniform_(lora_A_trainable, a=math.sqrt(5))
                     # nn.init.kaiming_uniform_(lora_B_trainable, a=math.sqrt(5))
+                    nn.init.xavier_uniform_(lora_A_trainable, gain=1.0)
+                    nn.init.xavier_uniform_(lora_B_trainable, gain=1.0)
 
                     # Attach directly to the module. These are the initial trainable parameters.
                     setattr(module, "lora_A_trainable", lora_A_trainable)
@@ -148,8 +150,10 @@ class direct_fusionLoRAModule:
                 new_B_trainable = nn.Parameter(torch.zeros(out_features, new_rank, device=self.device))
 
                 # Use Kaiming uniform initialization for the new parameters
-                nn.init.kaiming_uniform_(new_A_trainable, a=math.sqrt(5))
+                # nn.init.kaiming_uniform_(new_A_trainable, a=math.sqrt(5))
                 # nn.init.kaiming_uniform_(new_B_trainable, a=math.sqrt(5))
+                nn.init.xavier_uniform_(new_A_trainable, gain=1.0)
+                nn.init.xavier_uniform_(new_B_trainable, gain=1.0)
 
                 # Attach the new parameters to the module
                 setattr(module, "lora_A_trainable", new_A_trainable)
@@ -173,8 +177,7 @@ class direct_fusionLoRAModule:
 
                 # Compute output from the single trainable matrix
                 if hasattr(module, "lora_A_trainable"):
-                    temp = torch.nn.functional.linear(x, module.lora_A_trainable)
-                    lora_output = torch.nn.functional.linear(temp, module.lora_B_trainable) * scaling
+                    lora_output = (x @ module.lora_A_trainable.T @ module.lora_B_trainable.T) * scaling
                     return output + lora_output
                 
                 return output

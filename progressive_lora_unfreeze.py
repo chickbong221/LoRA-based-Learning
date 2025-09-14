@@ -95,21 +95,27 @@ class ProgressiveLoRAModule:
                 lora_A_training = nn.Parameter(
                     torch.empty(self.current_rank, in_features, device=self.device)
                 )
-                nn.init.kaiming_uniform_(lora_A_training, a=math.sqrt(5))
                 lora_B_training = nn.Parameter(
                     torch.zeros(out_features, self.current_rank, device=self.device)
                 )
+
+                # nn.init.kaiming_uniform_(lora_A_training, a=math.sqrt(5))
+                nn.init.xavier_uniform_(lora_A_training, gain=1.0)
+                nn.init.xavier_uniform_(lora_B_training, gain=1.0)
 
                 remaining = self.max_rank - self.current_rank
                 lora_A_not_trained = nn.Parameter(
                     torch.empty(remaining, in_features, device=self.device),
                     requires_grad=False
                 )
-                nn.init.kaiming_uniform_(lora_A_not_trained, a=math.sqrt(5))
                 lora_B_not_trained = nn.Parameter(
                     torch.zeros(out_features, remaining, device=self.device),
                     requires_grad=False
                 )
+
+                # nn.init.kaiming_uniform_(lora_A_not_trained, a=math.sqrt(5))
+                nn.init.xavier_uniform_(lora_A_not_trained, gain=1.0)
+                nn.init.xavier_uniform_(lora_B_not_trained, gain=1.0)
 
                 lora_A_trained = nn.Parameter(torch.empty(0, in_features, device=self.device),
                                               requires_grad=False)
@@ -126,10 +132,10 @@ class ProgressiveLoRAModule:
 
                 module.weight.requires_grad = False
 
-        # print("Parameters with requires_grad=True:")
-        # for name, param in self.model.named_parameters():
-        #     if param.requires_grad:
-        #         print(name, param.shape)
+        print("Parameters with requires_grad=True:")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                print(name, param.shape)
 
     def expand_rank(self, new_rank):
         if new_rank >= self.max_rank:
@@ -245,13 +251,14 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
     current_rank = args.start_rank
     loss_history = []
 
-    min_improvement = 0.005  # Minimum loss reduction threshold
+    min_improvement = 0.001  # Minimum loss reduction threshold
     patience_epochs = 5
     last_expansion_epoch = 0
     patience = 0
     
     for epoch in range(args.epochs):
         # Check if we need to expand rank based on loss plateau
+        print_count = 0
         should_expand = False
 
         if (epoch > 0 and current_rank < args.max_rank and len(loss_history) >= 5):
@@ -274,12 +281,17 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
             
             # Call the expand_rank method on the progressive_lora object
             progressive_lora.expand_rank(new_rank)
+
+            args.lr = args.lr * 0.5
+            args.lr = max(args.lr, 1e-5)  # don't go below 1e-5
+            min_improvement = max(min_improvement * 0.3, 0.00005)
+            print(f"Learning rate decayed to {args.lr}")
+            optimizer = optim.AdamW(model.parameters(), lr=args.lr)
             
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print(f"Rank expanded to {new_rank} at epoch {epoch+1} (improvement: {improvement:.6f})")
             
             current_rank = new_rank
-            # The optimizer does not need to be re-initialized. It will automatically detect the new trainable parameters.
             last_expansion_epoch = epoch
             patience = 0  
 
@@ -298,8 +310,36 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
             outputs = model(pixel_values=images)
             logits = outputs.logits
             loss = ce(logits, labels)
+
+            # check gradient wrt output (logits)
+            # print_count += 1
+            # if print_count <= 10:
+            #     logits_grad = torch.autograd.grad(loss, logits, retain_graph=True)[0]
+            #     print("||dL/dy|| (logits grad norm):", logits_grad.norm().item())
+
             loss.backward()
             optimizer.step()
+
+            layer_count = 0
+            print_count += 1
+            if print_count <= 3:
+                # print("Params updated in this step:")
+                total_norm = 0.0
+                for name, param in model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        # kiểm tra param có trong optimizer không
+                        in_optimizer = any(p is param for group in optimizer.param_groups for p in group['params'])
+                        if in_optimizer:
+                            # accumulate norm^2
+                            param_norm = param.grad.data.norm(2).item()
+                            total_norm += param_norm ** 2
+
+                            # if layer_count <= 5:
+                            #     print(f"  {name:50s} | grad_norm={param_norm:.6f}")
+                            #     layer_count += 1
+
+                total_norm = total_norm ** 0.5
+                print(f"Total grad norm: {total_norm:.6f}")
 
             preds = logits.argmax(dim=-1)
             correct = (preds == labels).sum().item()
@@ -307,6 +347,8 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
             total += bs
             running_loss += loss.item() * bs
             running_acc += correct
+
+            # break  # chỉ in thử 1 batch, tránh quá dài
 
         train_loss = running_loss / total
         train_acc = running_acc / total
