@@ -76,14 +76,14 @@ def main():
     print("="*60)
     
     # Run 1: Full Fine-tuning (without LoRA)
-    # results_full_ft = train_single_run(
-    #     use_lora=False, 
-    #     args=args, 
-    #     train_loader=train_loader, 
-    #     val_loader=val_loader, 
-    #     device=device, 
-    #     wandb_run=wandb_run
-    # )
+    results_full_ft = train_single_run(
+        use_lora=False, 
+        args=args, 
+        train_loader=train_loader, 
+        val_loader=val_loader, 
+        device=device, 
+        wandb_run=wandb_run
+    )
     
     # # Run 2: Progressive LoRA
     # results_progressive = train_with_progressive_lora(
@@ -113,13 +113,13 @@ def main():
     # )
 
     # Run 5: Unfreeze Progressive LoRA
-    results_full_ft = train_with_progressive_lora_unfreeze( 
-        args=args, 
-        train_loader=train_loader, 
-        val_loader=val_loader, 
-        device=device, 
-        wandb_run=wandb_run
-    )
+    # results_full_ft = train_with_progressive_lora_unfreeze( 
+    #     args=args, 
+    #     train_loader=train_loader, 
+    #     val_loader=val_loader, 
+    #     device=device, 
+    #     wandb_run=wandb_run
+    # )
     
     # Final comparison
     # print(f"\n{'='*60}")

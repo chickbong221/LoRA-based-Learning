@@ -149,12 +149,12 @@ class ProgressiveLoRAModule:
                 module.lora_A_trained = nn.Parameter(
                     torch.cat([module.lora_A_trained.data,
                                module.lora_A_training.data], dim=0),
-                    requires_grad=False
+                    requires_grad=True
                 )
                 module.lora_B_trained = nn.Parameter(
                     torch.cat([module.lora_B_trained.data,
                                module.lora_B_training.data], dim=1),
-                    requires_grad=False
+                    requires_grad=True
                 )
 
                 # Lấy slice mới từ not_trained
@@ -282,10 +282,10 @@ def train_with_progressive_lora_unfreeze(args, train_loader, val_loader, device,
             # Call the expand_rank method on the progressive_lora object
             progressive_lora.expand_rank(new_rank)
 
-            args.lr = args.lr * 0.5
-            args.lr = max(args.lr, 1e-5)  # don't go below 1e-5
+            # args.lr = args.lr * 0.5
+            # args.lr = max(args.lr, 1e-5)  # don't go below 1e-5
             min_improvement = max(min_improvement * 0.3, 0.00005)
-            print(f"Learning rate decayed to {args.lr}")
+            # print(f"Learning rate decayed to {args.lr}")
             optimizer = optim.AdamW(model.parameters(), lr=args.lr)
             
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
